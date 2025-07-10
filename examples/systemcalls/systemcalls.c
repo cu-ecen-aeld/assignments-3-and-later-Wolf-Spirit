@@ -24,7 +24,7 @@ bool do_system(const char *cmd)
 	int ret;
 
 	ret = system(cmd);
-	if (ret != -1 && WIFEXITED(ret))
+	if (ret != -1)
 		return true;
 	else
 		return false;
@@ -70,9 +70,6 @@ bool do_exec(int count, ...)
 */
 	va_end(args);
 
-	if (command[0] && command[0][0] != '/')
-		return false;
-
 	int status;
 	pid_t pid = fork();
 	if (pid == -1)
@@ -115,9 +112,6 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
 */
 	va_end(args);
 
-	if (command[0] && command[0][0] != '/')
-		return false;
-
 	pid_t pid;
 	int status;
 	int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
@@ -138,8 +132,8 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
 
 		default:
 			waitpid(pid, &status, 0);
-			close(fd);
 	}
+	close(fd);
 
 	return WEXITSTATUS(status) == 0;
 }
