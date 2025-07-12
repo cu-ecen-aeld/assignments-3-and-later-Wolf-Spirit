@@ -37,9 +37,7 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     # TODO: Add your kernel build steps here
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
-    make -j 4 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
-    # make -j 4 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} zImage
-    # make -j 4 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules
+    make -j4 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs
 fi
 
@@ -55,10 +53,10 @@ then
 fi
 
 # TODO: Create necessary base directories
-mkdir ${OUTDIR}/rootfs
-cd ${OUTDIR}/rootfs
-mkdir bin dev etc home lib proc sbin sys tmp usr var
-mkdir usr/bin usr/lib usr/sbin
+mkdir -p rootfs
+cd rootfs
+mkdir -p bin dev etc home lib lib64 proc sbin sys tmp usr var
+mkdir -p usr/bin usr/lib usr/sbin
 mkdir -p var/log
 
 cd "$OUTDIR"
@@ -76,20 +74,19 @@ else
 fi
 
 # TODO: Make and install busybox
-make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
-make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} install
-
-echo "Library dependencies"
-${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
-${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
+make CONFIG_PREFIX=${OUTDIR}/rootfs ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} install
 
 # TODO: Add library dependencies to rootfs
 export SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
 cd ${OUTDIR}/rootfs
-cp -a ${SYSROOT}/lib/ld-linux-aarch64.so.1 lib
-cp -a ${SYSROOT}/lib64/libm.so.6 lib64
-cp -a ${SYSROOT}/lib64/libresolv.so.2 lib64
-cp -a ${SYSROOT}/lib64/libc.so.6 lib64
+cp ${SYSROOT}/lib/ld-linux-aarch64.so.1 ${OUTDIR}/rootfs/lib
+cp ${SYSROOT}/lib64/libm.so.6 ${OUTDIR}/rootfs/lib64
+cp ${SYSROOT}/lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64
+cp ${SYSROOT}/lib64/libc.so.6 ${OUTDIR}/rootfs/lib64
+
+# echo "Library dependencies"
+# ${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
+# ${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
 
 # TODO: Make device nodes
 cd ${OUTDIR}/rootfs
@@ -116,5 +113,4 @@ sudo chown -R root:root ${OUTDIR}/rootfs
 cd ${OUTDIR}/rootfs
 find . | cpio -H newc -ov --owner root:root > ${OUTDIR}/initramfs.cpio
 cd ${OUTDIR}
-gzip iniramfs.cpio
-mkimage -A arm -O linux -T ramdisk -d initramfs.cpio.gz uRamdisk
+gzip -f initramfs.cpio
