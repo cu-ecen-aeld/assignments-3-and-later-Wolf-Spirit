@@ -18,7 +18,7 @@
 
 #define PORT "9000"
 #define BACKLOG 10
-#define OUT_FILE "/var/tmp/aesdsocketdata" // const char *data_file =
+#define OUT_FILE "/var/tmp/aesdsocketdata" 
 #define BUFF_SIZE 512
 
 int server_fd = -1;
