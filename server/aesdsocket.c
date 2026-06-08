@@ -217,10 +217,8 @@ int main(int argc, char *argv[]) {
 	off_t offset = 0;
 	
 	// Accept conncetion until SIGINT or SIGTERM
-	printf("STEP 1\n");
 	while(1) {
 		// Peek from socket until closed or no more data
-		printf("STEP 2\n");
 		nread = recv(client_fd, buf, BUF_SIZE, MSG_PEEK);
 		
 		if (nread == -1) {
@@ -287,4 +285,5 @@ int main(int argc, char *argv[]) {
 	}
 	syslog(LOG_DEBUG, "Closed connection from %u", accepted_sockaddr.sin_addr.s_addr);
 
+	return 0;
 }
