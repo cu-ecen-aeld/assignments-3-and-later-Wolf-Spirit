@@ -1,285 +1,174 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <signal.h>
 #include <syslog.h>
-#include <stddef.h>
-#include <sys/stat.h>
-#include <sys/sendfile.h>
+#include <errno.h>
+#include <arpa/inet.h>
 
 #define PORT "9000"
 #define BACKLOG 10
-#define OUT_FILE "/var/tmp/aesdsocketdata" 
+#define OUT_FILE "/var/tmp/aesdsocketdata"
 #define BUFF_SIZE 512
 
 int server_fd = -1;
-int client_fd = -1;
-int ret;
+struct addrinfo *server_info;
 
-void handler(int sig) {
-	// Close any open connections
-	close(client_fd);
-	close(server_fd);
+void signal_handler(int sig) {
 
-	// Delete data file
-	ret = remove(OUT_FILE);
-	if (ret == -1) {
-		perror("remove");
-		exit(EXIT_FAILURE);
+	if (sig == SIGINT || sig == SIGTERM) {
+		syslog(LOG_DEBUG, "Caught signal, exiting");
+
+		if (!access(OUT_FILE, F_OK)) {
+			if (unlink(OUT_FILE) == -1)
+				perror("Couldn't delete the file");
+		}
+
+		if (server_info != NULL)
+			freeaddrinfo(server_info);
+
+		if (server_fd != -1) {
+			syslog(LOG_DEBUG, "Closing socket");
+			close(server_fd);
+		}
+
+		syslog(LOG_DEBUG, "Closing syslog");
+		closelog();	
+		
+		exit(EXIT_SUCCESS);
 	}
-	syslog(LOG_DEBUG, "Caught signal, exiting");
-
-	exit(EXIT_SUCCESS);
 }
 
-int set_handler(void){
-	struct sigaction act;
-	act.sa_handler = handler;
-	sigemptyset(&act.sa_mask);
-	act.sa_flags = 0;
-	ret = sigaction(SIGINT, &act, NULL);
-	if (ret == -1) {
-		perror("Error");
-		return -1;
-	}
-	ret = sigaction(SIGTERM, &act, NULL);
-	if (ret == -1) {
-		perror("Error");
-		return -1;
+void client_handler(int client_fd) {
+	char recv_buff[BUFF_SIZE];
+
+	FILE *file = fopen(OUT_FILE, "a+");
+	if (file == NULL) {
+		perror("Couldn't create or open file");
+		close(client_fd);
+		return;
 	}
 
-	return 0;
+	int data_to_recv;
+	while ((data_to_recv = recv(client_fd, recv_buff, BUFF_SIZE - 1, 0)) > 0) {
+		if (fwrite(recv_buff, sizeof(char), data_to_recv, file) == 0) {
+			perror("Couldn't write to file");
+			fclose(file);
+			return;
+		}
+		fflush(file);
+
+		// Check if newline exists in currently received chunk
+		char *newline = memchr(recv_buff, '\n', data_to_recv);
+		if (newline != NULL) {
+			fseek(file, 0, SEEK_SET);
+			char send_buff[BUFF_SIZE];
+			int data_to_send;
+			while ((data_to_send = fread(send_buff, 1, BUFF_SIZE - 1, file)) > 0) {
+				if (send(client_fd, send_buff, data_to_send, 0) < 0) {
+					perror("Couldn't send data to client");
+					fclose(file);
+					return;
+				}
+			}
+			fseek(file, 0, SEEK_END);
+		}
+	}
+
+	if (data_to_recv < 0)
+		perror("Error while receiveing data from client");
+
+	fclose(file);
+	close(client_fd);
 }
 
 int create_daemon(void) {
-	pid_t pid = fork(); // fork
-	if (pid == -1) {
-		perror("fork");
-		return -1;
-	}
-	if (pid > 0)
-		exit(EXIT_SUCCESS); // exit parent
+	pid_t pid = fork();
 
-	pid_t sid = setsid(); // create new session
-	if (sid == -1) {
-		perror("setsid");
-		return -1;
-	}
+	if (pid < 0)
+		exit(EXIT_FAILURE);
+	else if (pid > 0)
+		exit(EXIT_SUCCESS);
 
-	pid = fork(); // fork again
-	if (pid == -1) {
-		perror("fork");
-		return -1;
-	}
-	if (pid > 0)
-		exit(EXIT_SUCCESS); // exit parent
-
-	ret = chdir("/");
-	if (ret == -1) {
-		perror("chdir");
-		return -1;
-	}
-
-	umask(0); // reset file permissons
-
-	// Redirect std fd's
-	int fd = open("/dev/null", O_RDWR);
-	if (fd == -1) {
-		perror("open /dev/null");
-		return -1;
-	}
-	int new_fd = dup2(fd, 0);
-	if (new_fd == -1) {
-		perror("dup2");
-		return -1;
-	}
-
-	new_fd = dup2(fd, 1);
-	if (new_fd == -1) {
-		perror("dup2");
-		return -1;
-	}
-
-	new_fd = dup2(fd, 2);
-	if (new_fd == -1) {
-		perror("dup2");
-		return -1;
-	}
-
-	if (fd > 2)
-		close(fd);
-	
-	return 0;
-}
-
-int bind_socket(char* port_str) {
-	struct addrinfo hints;
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_flags = AI_PASSIVE;
-	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
-	struct addrinfo *res;
-	ret = getaddrinfo(NULL, port_str, &hints, &res);
-	if (ret != 0) {
-		printf("getaddrinfo: %s\n", gai_strerror(ret));
-		return -1;
-	}
-
-	ret = bind(server_fd, res->ai_addr, res->ai_addrlen);
-	if (ret == -1) {
-		perror("bind");
-		return -1;
-	}
-	freeaddrinfo(res);
-
-	return 0;
-}
-
-int resize_buf(char** buf, size_t* buf_len, size_t add_len) {
-	size_t new_len = *buf_len + add_len;
-	char* tmp = realloc(*buf, new_len);
-	if (tmp == NULL) {
-		printf("realloc failed\n");
-		return -1;
-	}
-
-	*buf = tmp;
-	*buf_len = new_len;
-
-	return 0;
+	if (setsid() < 0)
+		exit(EXIT_FAILURE);
 }
 
 int main(int argc, char *argv[]) {
-	// Set signal handler for SIGINT and SIRTERM
-	ret = set_handler();
-	if (ret == -1)
-		return ret;
+	if (argc > 1 && strcmp(argv[1], "-d") == 0)
+		create_daemon();
 
-	// Create socket
-	server_fd = socket(AF_INET, SOCK_STREAM, 0);
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = &signal_handler;
+	sa.sa_flags = 0;
+
+	if (sigaction(SIGINT, &sa, NULL) == -1 || sigaction(SIGTERM, &sa, NULL) == -1) {
+		perror("Error while setting signal handlers");
+		exit(EXIT_FAILURE);
+	}
+
+	openlog("aesdsocket", LOG_PID, LOG_USER);
+
+	struct addrinfo hints;
+	memset(&hints, 0, sizeof(struct addrinfo));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_PASSIVE;
+
+	int status = getaddrinfo(NULL, PORT, &hints, &server_fd);
+	if (status != 0) {
+		perror("getaddrinfo error");
+		exit(EXIT_FAILURE);
+	}
+
+	server_fd = socket(server_info->ai_family, server_info->ai_socktype, server_info->ai_protocol);
 	if (server_fd == -1) {
-		perror("socket");
-		return -1;
+		perror("Error while creating socket");\
+		freeaddrinfo(server_info);
+		exit(EXIT_FAILURE);
 	}
 
-	// Bind socket to port
-	ret = bind_socket(PORT);
-	if (ret == -1)
-		return -1;
+	// Allow socket address reuse immediately after shutdown
+	int reuse = 1;
+	setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
-	// If '-d' option passed, run as daemon
-	int opt = getopt(argc, argv, "d");
-	if (opt == 'd') {
-		ret = create_daemon();
-		if (ret == -1)
-			return -1;
+	if (bind(server_fd, server_info->ai_addr, server_info->ai_addrlen) < 0) {
+		perror("Binding failed");
+		freeaddrinfo(server_info);
+		exit(EXIT_FAILURE);
 	}
 
-	// Set socket to listen for connection
-	int backlog = 1;
-	ret = listen(server_fd, backlog);
-	if (ret == -1) {
-		perror("listen");
-		return -1;
+	freeaddrinfo(server_info); // Save to free after binding
+
+	if (listen(server_fd, BACKLOG) < 0) {
+		perror("Listening to port failed");
+		exit(EXIT_FAILURE);
 	}
 
-	// Open or create data file
-	int datafd = open(OUT_FILE, O_RDWR | O_APPEND | O_CREAT);
-	if (datafd == -1) {
-		perror("open");
-		return -1;
-	}
-
-	size_t packet_buf_len = 500;
-	char* packet_buf = (char*)malloc(packet_buf_len);
-	size_t packet_len = 0;
-
-	struct sockaddr_in accepted_sockaddr;
-	socklen_t addrlen = sizeof(accepted_sockaddr);
-	ssize_t nread;
-	const size_t BUF_SIZE = 500;
-	char buf[BUF_SIZE];
-	char* newline_ptr;
-	ptrdiff_t newline_pos;
-	size_t str_len;
-	ssize_t nwritten;
-	ssize_t nsent;
-	struct stat statbuf;
-	off_t offset = 0;
-	
-	// Accept conncetion until SIGINT or SIGTERM
 	while(1) {
-		// Peek from socket until closed or no more data
-		nread = recv(client_fd, buf, BUF_SIZE, MSG_PEEK);
-		
-		if (nread == -1) {
-			perror("recv");
-			return -1;
-		}
-		else if (nread == 0) // If socket closed or no more data, break
-			break;
+		struct sockaddr_in client_addr; // Fixed struct type
+		socklen_t addr_len = sizeof(client_addr);
 
-		// Find newline character
-		newline_ptr = memchr(buf, '\n', nread);
-		newline_pos = newline_ptr == NULL ? nread - 1 : newline_ptr - buf;
-		str_len = newline_pos + 1;
-
-		// Increase packet buffer size if exceeded
-		if ((packet_len + str_len) > packet_buf_len) {
-			ret = resize_buf(&packet_buf, &packet_buf_len, str_len);
-			if (ret == -1)
-				return -1;
-		}
-
-		// Append str_len from stream to packet buffer
-		nread = recv(client_fd, packet_buf + packet_len, str_len, 0);
-		if (nread == -1) {
-			perror("recv");
-			return -1;
-		}
-		packet_len += str_len;
-
-		// If packet not complete, loop back to receive again
-		if (newline_ptr == NULL)
+		int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
+		if (client_fd == -1) {
+			perror("ERROR: Accept failed");
 			continue;
-
-		// Packet complete: write to data file
-		nwritten = write(datafd, packet_buf, packet_len);
-		if (nwritten == -1) {
-			perror("write");
-			return -1;
 		}
 
-		// Return contents of data file to clien
-		ret = fstat(datafd, &statbuf);
-		if (ret == -1) {
-			perror("stat");
-			return -1;
-		}
-		offset = 0;
-		nsent = sendfile(client_fd, datafd, &offset, statbuf.st_size);
-		if (nsent == -1) {
-			perror("sendfile");
-			return -1;
-		}
+		char ip_str[INET_ADDRSTRLEN];
+		inet_ntop(AF_INET, &client_addr.sin_addr, ip_str, sizeof(ip_str));
 
-		// Reset packet_len
-		packet_len = 0;
+		syslog(LOG_DEBUG, "Accepted connection from %s", ip_str);
 
+		client_handler(client_fd);
+
+		syslog(LOG_DEBUG, "Closed connection from %s", ip_str);
 	}
-
-	// Close connection
-	ret = close(client_fd);
-	if (ret == -1) {
-		perror("close");
-		return -1;
-	}
-	syslog(LOG_DEBUG, "Closed connection from %u", accepted_sockaddr.sin_addr.s_addr);
 
 	return 0;
 }
