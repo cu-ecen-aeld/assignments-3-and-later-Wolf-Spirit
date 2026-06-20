@@ -13,7 +13,7 @@
 #define PORT "9000"
 #define BACKLOG 10
 #define OUT_FILE "/var/tmp/aesdsocketdata"
-#define BUFF_SIZE 512
+#define BUFF_SIZE 1024
 
 int server_fd = -1;
 struct addrinfo *server_info;
@@ -86,7 +86,7 @@ void client_handler(int client_fd) {
 	close(client_fd);
 }
 
-int create_daemon(void) {
+void create_daemon(void) {
 	pid_t pid = fork();
 
 	if (pid < 0)
@@ -120,7 +120,7 @@ int main(int argc, char *argv[]) {
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE;
 
-	int status = getaddrinfo(NULL, PORT, &hints, &server_fd);
+	int status = getaddrinfo(NULL, PORT, &hints, &server_info);
 	if (status != 0) {
 		perror("getaddrinfo error");
 		exit(EXIT_FAILURE);
